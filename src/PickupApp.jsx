@@ -1,14 +1,29 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState } from "react";
 import { Check, Clock, MapPin, Send, Users, ChevronDown, X } from "lucide-react";
-import { supabase } from "./supabaseClient.js";
+
+const INITIAL_KIDS = [
+  { id: 1, name: "Mosada Abeyrathna", school: "Highlands College", status: null, time: "", pickedUp: false },
+  { id: 2, name: "Diyon Perera", school: "St. Peter's College", status: null, time: "", pickedUp: false },
+  { id: 3, name: "Sethun Athapaththu", school: "Royal Institute", status: null, time: "", pickedUp: false },
+  { id: 4, name: "Kiviru Insitha", school: "Vidura College", status: null, time: "", pickedUp: false },
+  { id: 5, name: "Dhyaan Weerasooriya", school: "Polymath College", status: null, time: "", pickedUp: false },
+  { id: 6, name: "Thunuvi Sooriyabandara", school: "Vidura College", status: null, time: "", pickedUp: false },
+  { id: 7, name: "Jayashwin Jayarathna", school: "Leeds International", status: null, time: "", pickedUp: false },
+  { id: 8, name: "Vonal", school: "Polymath College", status: null, time: "", pickedUp: false },
+  { id: 9, name: "Danuj Kariyawasam", school: "Louvre College", status: null, time: "", pickedUp: false },
+  { id: 10, name: "Sharinda Niroshan", school: "Highlands College", status: null, time: "", pickedUp: false },
+  { id: 11, name: "Paalinda", school: "Highlands College", status: null, time: "", pickedUp: false },
+  { id: 12, name: "Vathsadi Warshakoon", school: "Highlands College", status: null, time: "", pickedUp: false },
+  { id: 13, name: "Thenuja Kariyawasam", school: "Louvre College", status: null, time: "", pickedUp: false },
+  { id: 14, name: "Vindya Kurakulasooriya", school: "Lyceum Leaf Kottawa", status: null, time: "", pickedUp: false },
+  { id: 15, name: "Rayon Wijesundara", school: "Highlands College", status: null, time: "", pickedUp: false },
+];
 
 export default function PickupApp() {
-  const [kids, setKids] = useState([]);
+  const [kids, setKids] = useState(INITIAL_KIDS);
   const [role, setRole] = useState("manager");
-  const [activeParent, setActiveParent] = useState("");
+  const [activeKidId, setActiveKidId] = useState(1);
   const [log, setLog] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
 
   const today = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -16,136 +31,34 @@ export default function PickupApp() {
     day: "numeric",
   });
 
-  // Initial load
-  useEffect(() => {
-    async function load() {
-      const { data: kidsData, error: kidsErr } = await supabase
-        .from("kids")
-        .select("*")
-        .order("id", { ascending: true });
+  function addLog(text) {
+    const t = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+    setLog((l) => [{ text, t }, ...l]);
+  }
 
-      const { data: logData, error: logErr } = await supabase
-        .from("activity_log")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(50);
+  function setParentResponse(kidId, status, time) {
+    setKids((ks) =>
+      ks.map((k) => (k.id === kidId ? { ...k, status, time: status === "yes" ? time : "" } : k))
+    );
+    const kid = kids.find((k) => k.id === kidId);
+    if (kid) addLog(`${kid.name} (${kid.school}) marked: ${status === "yes" ? `Pickup needed${time ? " at " + time : ""}` : "No pickup today"}`);
+  }
 
-      if (kidsErr || logErr) {
-        setError((kidsErr || logErr).message);
-      } else {
-        setKids(kidsData.map(mapKidFromDb));
-        setLog(logData.map((l) => ({ text: l.text, t: formatTime(l.created_at) })));
-        if (kidsData.length > 0) setActiveParent(kidsData[0].parent_name);
-      }
-      setLoading(false);
-    }
-    load();
-  }, []);
+  function markPicked(kidId) {
+    setKids((ks) => ks.map((k) => (k.id === kidId ? { ...k, pickedUp: true } : k)));
+    const kid = kids.find((k) => k.id === kidId);
+    if (kid) addLog(`${kid.name} picked up ✓`);
+  }
 
-  // Realtime sync: any client's change updates everyone
-  useEffect(() => {
-    const channel = supabase
-      .channel("pickup-realtime")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "kids" },
-        (payload) => {
-          if (payload.eventType === "INSERT") {
-            setKids((ks) => [...ks, mapKidFromDb(payload.new)]);
-          } else if (payload.eventType === "UPDATE") {
-            setKids((ks) =>
-              ks.map((k) => (k.id === payload.new.id ? mapKidFromDb(payload.new) : k))
-            );
-          } else if (payload.eventType === "DELETE") {
-            setKids((ks) => ks.filter((k) => k.id !== payload.old.id));
-          }
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "activity_log" },
-        (payload) => {
-          setLog((l) => [{ text: payload.new.text, t: formatTime(payload.new.created_at) }, ...l]);
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  const addLog = useCallback(async (text) => {
-    await supabase.from("activity_log").insert({ text });
-  }, []);
-
-  const setParentResponse = useCallback(
-    async (kidId, status, time) => {
-      const kid = kids.find((k) => k.id === kidId);
-      const { error: updErr } = await supabase
-        .from("kids")
-        .update({
-          status,
-          pickup_time: status === "yes" ? time : "",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", kidId);
-      if (updErr) {
-        setError(updErr.message);
-        return;
-      }
-      if (kid) {
-        addLog(
-          `${kid.parent} marked ${kid.name}: ${
-            status === "yes" ? `Pickup needed${time ? " at " + time : ""}` : "No pickup today"
-          }`
-        );
-      }
-    },
-    [kids, addLog]
-  );
-
-  const markPicked = useCallback(
-    async (kidId) => {
-      const kid = kids.find((k) => k.id === kidId);
-      const { error: updErr } = await supabase
-        .from("kids")
-        .update({ picked_up: true, updated_at: new Date().toISOString() })
-        .eq("id", kidId);
-      if (updErr) {
-        setError(updErr.message);
-        return;
-      }
-      if (kid) addLog(`${kid.name} picked up ✓`);
-    },
-    [kids, addLog]
-  );
-
-  const resetDay = useCallback(async () => {
-    const { error: updErr } = await supabase
-      .from("kids")
-      .update({ status: null, pickup_time: "", picked_up: false })
-      .not("id", "is", null);
-    if (updErr) {
-      setError(updErr.message);
-      return;
-    }
-    await supabase.from("activity_log").delete().not("id", "is", null);
+  function resetDay() {
+    setKids((ks) => ks.map((k) => ({ ...k, status: null, time: "", pickedUp: false })));
     setLog([]);
-  }, []);
+  }
 
   const needPickup = kids.filter((k) => k.status === "yes");
   const noPickup = kids.filter((k) => k.status === "no");
   const pending = kids.filter((k) => k.status === null);
   const pickedCount = needPickup.filter((k) => k.pickedUp).length;
-
-  if (loading) {
-    return (
-      <div style={styles.app}>
-        <div style={{ padding: 40, textAlign: "center", color: "#8a7a63" }}>Loading…</div>
-      </div>
-    );
-  }
 
   return (
     <div style={styles.app}>
@@ -160,17 +73,11 @@ export default function PickupApp() {
         <RoleSwitcher role={role} setRole={setRole} />
       </div>
 
-      {error && (
-        <div style={{ background: "#f5e2e2", color: "#a13d3d", padding: "10px 18px", fontSize: 12.5 }}>
-          {error}
-        </div>
-      )}
-
       {role === "parent" && (
         <ParentView
           kids={kids}
-          activeParent={activeParent}
-          setActiveParent={setActiveParent}
+          activeKidId={activeKidId}
+          setActiveKidId={setActiveKidId}
           setParentResponse={setParentResponse}
         />
       )}
@@ -190,21 +97,6 @@ export default function PickupApp() {
       )}
     </div>
   );
-}
-
-function mapKidFromDb(row) {
-  return {
-    id: row.id,
-    name: row.name,
-    parent: row.parent_name,
-    status: row.status,
-    time: row.pickup_time || "",
-    pickedUp: row.picked_up,
-  };
-}
-
-function formatTime(iso) {
-  return new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 }
 
 function RoleSwitcher({ role, setRole }) {
@@ -231,30 +123,23 @@ function RoleSwitcher({ role, setRole }) {
   );
 }
 
-function ParentView({ kids, activeParent, setActiveParent, setParentResponse }) {
-  const parents = [...new Set(kids.map((k) => k.parent))];
-  const kid = kids.find((k) => k.parent === activeParent);
+function ParentView({ kids, activeKidId, setActiveKidId, setParentResponse }) {
+  const kid = kids.find((k) => k.id === activeKidId);
   const [timeInput, setTimeInput] = useState("3:00 PM");
-
-  if (!kid) {
-    return (
-      <div style={styles.section}>
-        <div style={styles.emptyState}>No kids found. Add some in your Supabase "kids" table.</div>
-      </div>
-    );
-  }
 
   return (
     <div style={styles.section}>
       <div style={styles.fieldRow}>
-        <label style={styles.fieldLabel}>Viewing as</label>
+        <label style={styles.fieldLabel}>Select your child</label>
         <select
-          value={activeParent}
-          onChange={(e) => setActiveParent(e.target.value)}
+          value={activeKidId}
+          onChange={(e) => setActiveKidId(Number(e.target.value))}
           style={styles.select}
         >
-          {parents.map((p) => (
-            <option key={p}>{p}</option>
+          {kids.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.name}
+            </option>
           ))}
         </select>
       </div>
@@ -264,7 +149,7 @@ function ParentView({ kids, activeParent, setActiveParent, setParentResponse }) 
           <div style={styles.kidAvatar}>{kid.name.charAt(0)}</div>
           <div>
             <div style={styles.kidName}>{kid.name}</div>
-            <div style={styles.kidSub}>Does {kid.name.split(" ")[0]} need pickup today?</div>
+            <div style={styles.kidSub}>{kid.school}</div>
           </div>
         </div>
 
@@ -340,7 +225,7 @@ function StaffView({ needPickup, markPicked, pickedCount }) {
             <div>
               <div style={styles.kidName}>{k.name}</div>
               <div style={styles.kidSub}>
-                {k.parent} · {k.time || "no time given"}
+                {k.school} · {k.time || "no time given"}
               </div>
             </div>
             {k.pickedUp ? (
@@ -371,20 +256,20 @@ function ManagerView({ kids, needPickup, noPickup, pending, pickedCount, log, re
   return (
     <div style={styles.section}>
       <div style={styles.statRow}>
-        <StatCard label="Total kids" value={kids.length} accent="#2e2a24" />
         <StatCard label="Need pickup" value={needPickup.length} accent="#b5723a" />
+        <StatCard label="Picked up" value={pickedCount} accent="#4f7a5c" />
         <StatCard label="No pickup" value={noPickup.length} accent="#8a7a63" />
-        <StatCard label="Awaiting" value={pending.length} accent="#a13d3d" />
+        <StatCard label="Awaiting reply" value={pending.length} accent="#a13d3d" />
       </div>
 
       <div style={styles.managerListBlock}>
-        <div style={styles.sectionTitle}>All kids</div>
+        <div style={styles.sectionTitle}>Children</div>
         <div style={styles.managerList}>
           {kids.map((k) => (
             <div key={k.id} style={styles.managerRow}>
               <div>
                 <div style={styles.kidName}>{k.name}</div>
-                <div style={styles.kidSub}>{k.parent}</div>
+                <div style={styles.kidSub}>{k.school}</div>
               </div>
               <StatusPill kid={k} />
             </div>
@@ -393,9 +278,12 @@ function ManagerView({ kids, needPickup, noPickup, pending, pickedCount, log, re
       </div>
 
       <button style={styles.waButton} onClick={() => setWaOpen((o) => !o)}>
-        <Send size={15} style={{ marginRight: 8 }} />
-        {waOpen ? "Hide" : "Get"} staff message
-        <ChevronDown size={15} style={{ marginLeft: 8 }} />
+        <Send size={16} style={{ marginRight: 8 }} />
+        {waOpen ? "Hide WhatsApp message" : "Generate WhatsApp pickup list"}
+        <ChevronDown
+          size={16}
+          style={{ marginLeft: 8, transform: waOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}
+        />
       </button>
 
       {waOpen && (
@@ -451,11 +339,13 @@ const styles = {
   app: {
     fontFamily: "'Inter', -apple-system, sans-serif",
     background: "#FBF7F0",
-    minHeight: "100vh",
+    minHeight: "600px",
     color: "#2e2a24",
     maxWidth: 480,
     margin: "0 auto",
+    borderRadius: 16,
     overflow: "hidden",
+    border: "1px solid #e7ddc9",
   },
   topbar: {
     background: "#2e2a24",
